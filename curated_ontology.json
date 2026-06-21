@@ -1,0 +1,136 @@
+{
+    "vp1": {
+        "canonical": "vp1",
+        "uniprot_name": "RNA-dependent RNA polymerase",
+        "aliases": [
+            "vp1_protein",
+            "rna_dependent_rna_polymerase",
+            "rna_polymerase",
+            "rdrp",
+            "replicase"
+        ],
+        "segment": "1",
+        "type": "enzyme"
+    },
+
+    "vp2": {
+        "canonical": "vp2",
+        "uniprot_name": "Outer capsid protein VP2",
+        "aliases": [
+            "vp2_protein",
+            "outer_capsid_protein_vp2",
+            "major_neutralization_protein",
+            "major_virus_neutralization_protein",
+            "oc1"
+        ],
+        "segment": "2",
+        "type": "capsid"
+    },
+
+    "vp3": {
+        "canonical": "vp3",
+        "uniprot_name": "Core protein VP3",
+        "aliases": [
+            "vp3_protein",
+            "inner_core_protein_vp3",
+            "subcore_shell_protein"
+        ],
+        "segment": "3",
+        "type": "capsid"
+    },
+
+    "vp4": {
+        "canonical": "vp4",
+        "uniprot_name": "Capping enzyme VP4",
+        "aliases": [
+            "vp4_protein",
+            "rna_capping_enzyme",
+            "capping_enzyme",
+            "rna_capping_protein",
+            "guanylyltransferase",
+            "capase"
+        ],
+        "segment": "4",
+        "type": "enzyme"
+    },
+
+    "vp5": {
+        "canonical": "vp5",
+        "uniprot_name": "Outer capsid protein VP5",
+        "aliases": [
+            "vp5_protein",
+            "outer_capsid_protein_vp5"
+        ],
+        "segment": "5",
+        "type": "capsid"
+    },
+
+    "vp6": {
+        "canonical": "vp6",
+        "uniprot_name": "Helicase VP6",
+        "aliases": [
+            "vp6_protein",
+            "helicase",
+            "atp_dependent_helicase"
+        ],
+        "segment": "6",
+        "type": "enzyme"
+    },
+
+    "vp7": {
+        "canonical": "vp7",
+        "uniprot_name": "Core surface protein VP7",
+        "aliases": [
+            "vp7_protein",
+            "core_surface_protein",
+            "inner_capsid_protein"
+        ],
+        "segment": "7",
+        "type": "capsid"
+    },
+
+    "ns1": {
+        "canonical": "ns1",
+        "uniprot_name": "Nonstructural protein NS1",
+        "aliases": [
+            "ns1_protein",
+            "tubule_protein"
+        ],
+        "segment": "8",
+        "type": "nonstructural"
+    },
+
+    "ns2": {
+        "canonical": "ns2",
+        "uniprot_name": "Nonstructural protein NS2",
+        "aliases": [
+            "ns2_protein",
+            "viroplasm_protein"
+        ],
+        "segment": "9",
+        "type": "nonstructural"
+    },
+
+    "ns3": {
+        "canonical": "ns3",
+        "uniprot_name": "Nonstructural protein NS3",
+        "aliases": [
+            "ns3_protein",
+            "glycoprotein_ns3",
+            "virus_release_protein"
+        ],
+        "segment": "10",
+        "type": "nonstructural"
+    },
+
+    "ns3a": {
+        "canonical": "ns3a",
+        "uniprot_name": "Nonstructural protein NS3A",
+        "aliases": [
+            "ns3a_protein",
+            "truncated_ns3"
+        ],
+        "segment": "10",
+        "type": "nonstructural"
+    }
+}

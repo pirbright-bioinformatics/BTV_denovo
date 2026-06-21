@@ -1,0 +1,66 @@
+# =============================================================================
+# Viral Genome Pipeline Configuration
+# =============================================================================
+
+# List of sample names. Each must have a contig.fa at {sample}/contig.fa
+samples:
+  - NIG-049
+  - NIG-124
+  - NIG-247
+  - NIG-290
+  - NIG-297
+  - NIGERIA_19_S14
+  - NIGERIA_243_S12
+  - NIGERIA_248_S10
+  - NIGERIA_257_S9
+  - NIGERIA_258_S7
+  - NIGERIA_275_S6
+  - NIGERIA_277_S3
+  - NIGERIA_281_S4
+  - NIGERIA_283_S11
+  - NIGERIA_286_S5
+  - NIGERIA_294_S8
+  - NIGERIA_80_S16
+  - NIGERIA_914_S13
+  - NIGERIA_92_S15
+
+# Paths to one-time reference/index resources
+# These are built once from your GenBank files and reused across all samples.
+paths:
+  # Directory containing *.gb / *.gbk GenBank files (input to parsegb.py)
+  gb_dir: "/ephemeral/bioinformatics/proj/bsp/BSP443/ref_and_index/gb"
+
+  # Where parsegb.py writes its outputs (ref FASTAs + metadata)
+  ref_dir: "/ephemeral/bioinformatics/proj/bsp/BSP443/ref_and_index/ref"
+
+  # Where diamond makedb writes the protein database
+  diamond_db_dir: "/ephemeral/bioinformatics/proj/bsp/BSP443/ref_and_index/diamonddb"
+
+  # Where mmseqs writes its database and cluster outputs
+  mmseqs_db_dir: "/ephemeral/bioinformatics/proj/bsp/BSP443/ref_and_index/mmseqdb"
+  mmseqs_tmp_dir: "/ephemeral/bioinformatics/proj/bsp/BSP443/ref_and_index/mmseqs_tmp"
+  mmseqs_cluster_db: "/ephemeral/bioinformatics/proj/bsp/BSP443/ref_and_index/mmseqs_tmp/clusterDB"
+
+  # The global clusters.tsv produced by mmseqs (shared across all samples)
+  clusters_tsv: "/ephemeral/bioinformatics/proj/bsp/BSP443/ref_and_index/clusters.tsv"
+  
+  # Base directory of samples
+  sample_dir: "/ephemeral/bioinformatics/proj/bsp/BSP443/Assemblies"
+
+# Curated ontology JSON consumed by full_viral_annotation_pipeline.py
+# Can be absolute or relative to each sample dir. If it lives in the
+# project root, use an absolute or "../"-relative path.
+ontology: "./curated_ontology.json"
+
+# Paths to per-sample support files that live alongside contig.fa
+# (relative to each sample directory, or absolute)
+per_sample:
+
+# Tool / environment settings
+tools:
+  diamond_threads: 8
+  mmseqs_threads: 8
+  diamond_evalue: "1e-5"
+  diamond_max_target_seqs: 100
+  mmseqs_min_seq_id: 0.7
+  mmseqs_coverage: 0.8
