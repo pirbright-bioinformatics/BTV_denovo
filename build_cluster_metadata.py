@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import csv
+import sys
 
 def clean_id(x):
     return x.split("|")[0]
@@ -8,23 +9,23 @@ def clean_id(x):
 # protein metadata
 metadata = {}
 
-with open("ref/protein_metadata.tsv") as f:
+with open(sys.argv[2]) as f:
     reader = csv.DictReader(f, delimiter="\t")
 
     for row in reader:
         metadata[row["protein_id"]] = row
 
 canonical_map = {}
-with open("analysis/cleaned.tsv") as f:
+with open(sys.argv[3]) as f:
     reader = csv.reader(f, delimiter="\t")
     for id,canonical,count,cluster in reader:
         canonical_map[clean_id(id)] = canonical
     
-with open("analysis/cluster_metadata.tsv", "w") as out:
+with open(sys.argv[4], "w") as out:
 
     out.write("protein_id\tcluster_id\tsegment\tgene\tprotein_length\n")
 
-    with open("analysis/clusters.tsv") as f:
+    with open(sys.argv[1]) as f:
         reader = csv.reader(f, delimiter="\t")
 
         for rep, member in reader:

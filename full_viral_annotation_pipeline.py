@@ -16,7 +16,7 @@ input: tab-separated file with two columns: entry and counts (dictionary of geno
 e.g. WEF49311.1|Bluetongue_virus_1|2|VP2_protein {'2:VP2_protein': 1, '2:major_virus_neutralization_protein': 7, '2:VP2': 13, '2:OC1': 2, '2:outer_capsid_protein_VP2': 3, 'unknown_segment:VP2': 1, 'unknown_segment:VP2_protein': 1}
 in analysis/cleaned.tsv, we output the canonical protein name and its count for each entry, along with the list of canonical proteins
 Usage:
-    python full_pipeline.py input.txt
+    python full_pipeline.py input.txt ontology
 """
 
 import re
@@ -245,7 +245,7 @@ def process_entry(entry_counts, stopwords, lookup):
 # -----------------------------
 # DASHBOARD
 # -----------------------------
-def make_dashboard(qc_file="analysis/qc_metrics.tsv"):
+def make_dashboard(qc_file="qc_metrics.tsv"):
     df = pd.read_csv(qc_file, sep="\t")
 
     for col in df.columns[1:]:
@@ -285,13 +285,13 @@ def run(input_file,onto_file):
 
     ontology = load_ontology(onto_file)
     lookup = build_lookup(ontology)
-    #print(f"lookup: {lookup}")
+    print(f"lookup: {lookup}")
 
     qc_rows = []
 
-    with open("analysis/cleaned.tsv", "w") as out, \
-         open("analysis/outliers.tsv", "w") as o, \
-         open("analysis/qc_metrics.tsv", "w") as q:
+    with open("cleaned.tsv", "w") as out, \
+         open("outliers.tsv", "w") as o, \
+         open("qc_metrics.tsv", "w") as q:
 
         q.write("entry\tgenome_frac\tprotein_frac\tentropy\tconflict\tunknown\toutlier\n")
 

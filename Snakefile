@@ -39,6 +39,8 @@
 # =============================================================================
 
 import os
+from glob import glob
+
 
 configfile: "config.yaml"
 
@@ -46,9 +48,10 @@ SAMPLES        = config["samples"]
 GB_DIR         = config["paths"]["gb_dir"]
 REF_DIR        = config["paths"]["ref_dir"]
 DIAMOND_DB_DIR = config["paths"]["diamond_db_dir"]
+BLAST_DB_DIR   = config["paths"]["blast_db_dir"]
 MMSEQS_DB_DIR  = config["paths"]["mmseqs_db_dir"]
 MMSEQS_TMP     = config["paths"]["mmseqs_tmp_dir"]
-CLUSTERS_TSV   = config["paths"]["clusters_tsv"]
+CLUSTER_DIR   = config["paths"]["cluster_dir"]
 SAMPLEDIR      = config["paths"]["sample_dir"]
 ONTOLOGY       = config["ontology"]
 
@@ -62,16 +65,7 @@ MMSEQS_COV      = config["tools"]["mmseqs_coverage"]
 # Scripts live next to the Snakefile
 SCRIPT_DIR = workflow.basedir
 LOGDIR = workflow.basedir + "/logs"
-# =============================================================================
-# Helper: resolve the ontology path relative to a sample dir
-# =============================================================================
-def ontology_for_sample(sample):
-    """Return the ontology path as seen from {sample}/ working directory."""
-    p = ONTOLOGY
-    if not os.path.isabs(p):
-        # Make it absolute so it survives chdir into sample dir
-        p = os.path.normpath(os.path.join(workflow.basedir, sample, p))
-    return p
+CLUSTERS_TSV = CLUSTER_DIR + "clusters.tsv"
 
 def log_path(*parts):
     return os.path.join(LOGDIR, *parts)
@@ -85,16 +79,19 @@ rule all:
     input:
         # Index sentinels
         DIAMOND_DB_DIR + "/viral_proteins.dmnd",
-        CLUSTERS_TSV,
-        # Per-sample final outputs
-        expand(SAMPLEDIR + "/{sample}/ranked_candidates.tsv", sample=SAMPLES),
+        CLUSTER_DIR + "/cluster_metadata.tsv",
 
+        # Per-sample final outputs
+        expand(SAMPLEDIR + "/{sample}/ranked_candidates.tsv.blasted", sample=SAMPLES),
+        expand(SAMPLEDIR + "/{sample}/analysis/coverage_report.pdf", sample=SAMPLES),
+        expand(SAMPLEDIR + "/{sample}/selected_contigs/coverage_report.pdf", sample=SAMPLES),
 
 rule build_index:
     """Convenience target: build all index files without running per-sample steps."""
     input:
         DIAMOND_DB_DIR + "/viral_proteins.dmnd",
-        CLUSTERS_TSV,
+        CLUSTER_DIR + "/cluster_metadata.tsv",
+        REF_DIR + "/gene_stats.txt",
 
 
 # =============================================================================
@@ -112,12 +109,14 @@ rule parsegb:
         nt_fasta  = REF_DIR + "/references.nt.fasta",
         aa_fasta  = REF_DIR + "/references.aa.fasta",
         metadata  = REF_DIR + "/protein_metadata.tsv",
+        genome_lengths = REF_DIR + "/genome_lengths.txt",
     log:
         log_path("parsegb.log")
     shell:
         """
         mkdir -p {REF_DIR}
         python {SCRIPT_DIR}/parsegb.py {input.gb_dir} {output.nt_fasta} {output.aa_fasta} {output.metadata} > {log} 2>&1
+        awk '{{if(NR%2){{A=substr($1,2);sub(/\|.*/, "", A)}}else{{print A,length($0)}}}}' {output.nt_fasta} > {output.genome_lengths}
         """
 
 
@@ -125,6 +124,7 @@ rule diamond_makedb:
     """Build Diamond protein database from reference AA FASTA (one-time)."""
     input:
         aa_fasta = REF_DIR + "/references.aa.fasta",
+        nt_fasta = REF_DIR + "/references.nt.fasta",
     output:
         db = DIAMOND_DB_DIR + "/viral_proteins.dmnd",
     log:
@@ -138,6 +138,8 @@ rule diamond_makedb:
             -d {DIAMOND_DB_DIR}/viral_proteins \
             --threads {threads} \
             > {log} 2>&1
+        mkdir -p {BLAST_DB_DIR}
+        makeblastdb -in {input.nt_fasta} -dbtype nucl -out {BLAST_DB_DIR}/blastdb.ref
         """
 
 
@@ -180,8 +182,6 @@ rule mmseqs_cluster:
 
 # =============================================================================
 # PER-SAMPLE RULES
-# Each rule changes into {sample}/ so that scripts using relative paths
-# (analysis/, cleaned.tsv, etc.) work unchanged.
 # =============================================================================
 
 rule diamond_blastx:
@@ -205,7 +205,7 @@ rule diamond_blastx:
             --db {input.db} \
             --out {output.hits} \
             --outfmt 6 qseqid sseqid stitle pident length evalue bitscore \
-                       qstart qend sstart send qlen slen \
+                       qstart qend sstart send qlen slen qframe \
             --evalue {DIAMOND_EVALUE} \
             --max-target-seqs {DIAMOND_MAXHITS} \
             --threads {threads} \
@@ -221,20 +221,14 @@ rule qc_cluster:
     """
     input:
         clusters = CLUSTERS_TSV,
-        # diamond output must exist so the analysis dir is present
-        diamond  = SAMPLEDIR + "/{sample}/analysis/diamond.tsv",
     output:
-        seg_miss     = SAMPLEDIR +"/{sample}/analysis/seg_miss.txt",
-        protein_miss = SAMPLEDIR +"/{sample}/analysis/protein_miss.txt",
+        cluster_proteins = CLUSTER_DIR +"/clusters.txt",
     log:
-        log_path("{sample}/qc_cluster.log")
+        log_path("qc_cluster.log")
     shell:
         """
-        # Make a local symlink so QC_cluster.py can open analysis/clusters.tsv
-
-        cd {SAMPLEDIR}/{wildcards.sample}
-        ln -sf $(realpath {input.clusters}) analysis/clusters.tsv
-        python {SCRIPT_DIR}/QC_cluster.py > {log} 2>&1
+        mkdir -p {CLUSTER_DIR}
+        python {SCRIPT_DIR}/QC_cluster.py {output.cluster_proteins} {input.clusters} > {log} 2>&1
         """
 
 
@@ -244,18 +238,18 @@ rule full_viral_annotation:
     Writes cleaned.tsv, outliers.tsv, qc_metrics.tsv, and QC PNGs.
     """
     input:
-        seg_miss = SAMPLEDIR + "/{sample}/analysis/seg_miss.txt",
+        cluster_proteins = CLUSTER_DIR +"/clusters.txt",
     output:
-        cleaned  = SAMPLEDIR + "/{sample}/analysis/cleaned.tsv",
-        outliers = SAMPLEDIR + "/{sample}/analysis/outliers.tsv",
-        qc_tsv   = SAMPLEDIR + "/{sample}/analysis/qc_metrics.tsv",
+        cleaned  = CLUSTER_DIR + "/cleaned.tsv",
+        outliers = CLUSTER_DIR + "/outliers.tsv",
+        qc_tsv   = CLUSTER_DIR + "/qc_metrics.tsv",
     log:
-        log_path("{sample}/full_viral_annotation.log")
+        log_path("full_viral_annotation.log")
     shell:
         """
-        cd {SAMPLEDIR}/{wildcards.sample}
+        cd {CLUSTER_DIR}
         python {SCRIPT_DIR}/full_viral_annotation_pipeline.py \
-            analysis/seg_miss.txt {ONTOLOGY} \
+            {input.cluster_proteins} {ONTOLOGY} \
             > {log} 2>&1
         """
 
@@ -265,26 +259,32 @@ rule build_cluster_metadata:
     Build cluster_metadata.tsv from protein metadata + cleaned.tsv + clusters.tsv.
     """
     input:
-        protein_meta = REF_DIR + "/protein_metadata.tsv",
-        cleaned      = SAMPLEDIR + "/{sample}/analysis/cleaned.tsv",
+        protein_metadata = REF_DIR + "/protein_metadata.tsv",
+        cleaned      = CLUSTER_DIR + "/cleaned.tsv",
         clusters     = CLUSTERS_TSV,
     output:
-        cluster_meta = SAMPLEDIR + "/{sample}/analysis/cluster_metadata.tsv",
+        cluster_meta = CLUSTER_DIR + "/cluster_metadata.tsv",
     log:
-        log_path("{sample}/build_cluster_metadata.log")
+        log_path("build_cluster_metadata.log")
     shell:
         """
-        # Ensure symlinks are in place (clusters already linked in qc_cluster)
-        # protein_metadata.tsv is read as ref/protein_metadata.tsv from sample dir
-        cd {SAMPLEDIR}/{wildcards.sample}
-        mkdir -p ref
-        ln -sf $(realpath {input.protein_meta}) \
-            ref/protein_metadata.tsv 2>/dev/null || true
-
-        python {SCRIPT_DIR}/build_cluster_metadata.py \
+        python {SCRIPT_DIR}/build_cluster_metadata.py {input.clusters} {input.protein_metadata} {input.cleaned} {output.cluster_meta} \
             > {log} 2>&1
         """
-
+rule build_length_stats:
+    """
+    Build std and length of general segments 
+    """
+    input:
+        cluster_meta = CLUSTER_DIR + "/cluster_metadata.tsv",
+        genome_lengths = REF_DIR + "/genome_lengths.txt",
+        protein_metadata = REF_DIR + "/protein_metadata.tsv",
+    output:
+        gene_stats = REF_DIR + "/gene_stats.txt"
+    shell:
+        """
+        Rscript generate_length_stats.R {input.cluster_meta} {input.genome_lengths} {input.protein_metadata} > {output.gene_stats} 
+        """
 
 rule score_segments:
     """
@@ -293,14 +293,103 @@ rule score_segments:
     """
     input:
         diamond      = SAMPLEDIR + "/{sample}/analysis/diamond.tsv",
-        cluster_meta = SAMPLEDIR + "/{sample}/analysis/cluster_metadata.tsv",
+        cluster_meta = CLUSTER_DIR + "/cluster_metadata.tsv",
+        gene_stats = REF_DIR + "/gene_stats.txt"
     output:
         ranked = SAMPLEDIR + "/{sample}/ranked_candidates.tsv",
+        ranked_blast = SAMPLEDIR + "/{sample}/ranked_candidates.tsv.blasted",
+        selected_hits = SAMPLEDIR + "/{sample}/selected_hits.tsv",
     log:
         log_path("{sample}/score_segments.log")
     shell:
         """
         cd {SAMPLEDIR}/{wildcards.sample}
-        python {SCRIPT_DIR}/score_segments.py \
+        python {SCRIPT_DIR}/score_segments.py {input.cluster_meta} \
             > {log} 2>&1
+        Rscript {SCRIPT_DIR}/filter_by_length.R {output.ranked} {input.gene_stats} {output.ranked}.filtered
+        while read F;
+        do 
+          contig=$(echo $F|awk '{{print $2}}');
+          if [ "$contig" != "contig" ];
+          then
+              HIT=$(blastn -db {BLAST_DB_DIR}/blastdb.ref -query analysis/contigs/$contig.fa  -max_target_seqs 1   -max_hsps 1   -outfmt "6 qseqid sseqid pident length bitscore evalue");
+              if [ "$HIT" != "" ];
+              then 
+                 echo $F $HIT;
+              fi;
+          else
+              echo $F "qseqid sseqid pident len bitscore evalue"
+          fi
+        done<{output.ranked}.filtered |awk '{{$7="";print $0}}'>{output.ranked}.blasted
+        python {SCRIPT_DIR}/retain_tophits.py {output.ranked}.blasted {output.selected_hits} \
+
+
+        """
+checkpoint extract_contigs:
+    input:
+        ranked = SAMPLEDIR + "/{sample}/selected_hits.tsv",
+    output:
+        contigs_dir = directory(SAMPLEDIR + "/{sample}/analysis/contigs")
+    shell:
+        """
+        mkdir -p {output.contigs_dir}
+        awk '(NR>1) {{print $2}}' {input.ranked} | while read F; do
+            grep -A1 "$F" {SAMPLEDIR}/{wildcards.sample}/assembly.fasta > {output.contigs_dir}/"$F".fa
+        done
+        """
+
+rule align_contig:
+    input:
+        contig = SAMPLEDIR + "/{sample}/analysis/contigs/{contig}.fa",
+        R1 = lambda wc: glob(f"{SAMPLEDIR}/{wc.sample}/trimmed/*_val_1.fq"),
+        R2 = lambda wc: glob(f"{SAMPLEDIR}/{wc.sample}/trimmed/*_val_2.fq"),
+    output:
+        bam = SAMPLEDIR + "/{sample}/analysis/bam/{contig}.fa.bam",
+        bai = SAMPLEDIR + "/{sample}/analysis/bam/{contig}.fa.bam.bai",
+        depth = SAMPLEDIR + "/{sample}/analysis/{contig}.fa.depth.txt"
+    threads: 10
+    shell:
+        """
+        mkdir -p {SAMPLEDIR}/{wildcards.sample}/analysis/bam
+        minimap2 -ax sr -t {threads} {input.contig} {input.R1} {input.R2} | samtools sort -o {output.bam}
+        samtools index {output.bam}
+        samtools depth -aa {output.bam} > {output.depth}
+        """
+
+def get_contig_depths(wc):
+    contigs_dir = checkpoints.extract_contigs.get(sample=wc.sample).output.contigs_dir
+    contigs = glob_wildcards(os.path.join(contigs_dir, "{contig}.fa")).contig
+    return expand(
+        SAMPLEDIR + "/{sample}/analysis/{contig}.fa.depth.txt",
+        sample=wc.sample,
+        contig=contigs
+    )
+
+rule align_to_contigs:
+    input:
+        selected = SAMPLEDIR + "/{sample}/selected_hits.tsv",
+        depths = get_contig_depths,
+        nt_fasta = REF_DIR + "/references.nt.fasta",
+    output:
+        report = SAMPLEDIR + "/{sample}/analysis/coverage_report.pdf",
+        containment = directory(SAMPLEDIR + "/{sample}/analysis/containment")
+
+    shell:
+        """
+        python {SCRIPT_DIR}/coverage.py {SAMPLEDIR}/{wildcards.sample}/analysis {input.selected} {output.report}
+        viral-containment   --hits {input.selected} --contigs {SAMPLEDIR}/{wildcards.sample}/assembly.fasta --refs {input.nt_fasta} --outdir {output.containment}
+        """
+
+rule extract_selected_contigs:
+    input:
+        selected = SAMPLEDIR + "/{sample}/selected_hits.tsv",
+        contigs = SAMPLEDIR + "/{sample}/assembly.fasta",
+    output:
+        selected_contigs = directory(SAMPLEDIR + "/{sample}/selected_contigs"),
+        coverage_report = SAMPLEDIR + "/{sample}/selected_contigs/coverage_report.pdf"
+    shell:
+        """
+        python {SCRIPT_DIR}/extract_gene_contigs.py {input.selected} {input.contigs} {output.selected_contigs}
+        pdfunite {SAMPLEDIR}/{wildcards.sample}/analysis/containment/plots/*.pdf {output.selected_contigs}/containment_plots.pdf 
+        cp {SAMPLEDIR}/{wildcards.sample}/analysis/coverage_report.pdf {output.selected_contigs}
         """

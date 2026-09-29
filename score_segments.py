@@ -2,9 +2,10 @@
 
 import csv
 from collections import defaultdict
+import sys
 
 diamond_file = "analysis/diamond.tsv"
-metadata_file = "analysis/cluster_metadata.tsv"
+metadata_file = sys.argv[1]
 
 def clean_id(x):
     return x.split("|")[0]
@@ -47,8 +48,8 @@ for row in csv.reader(open(diamond_file), delimiter="\t"):
         sstart,
         send,
         qlen,
-        slen
-
+        slen,
+        qframe 
     ) = row
 
     sseqid = clean_id(sseqid)
