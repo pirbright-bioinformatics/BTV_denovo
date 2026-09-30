@@ -55,7 +55,7 @@ def coverage_stats(df):
 
 ranked = pd.read_csv(
     RANKED_TSV,
-    sep=r"\s+"
+    sep="\t"
 
 )
 

@@ -14,8 +14,8 @@ ABS_Z_DISCARD = 3.5
 MAX_CONTIGS = 3
 
 # Read whitespace-delimited table
-df = pd.read_csv(INPUT, sep=r"\s+")
-df = df[df["sseqid"].str.contains("Bluetongue", case=False, na=False)]
+df = pd.read_csv(INPUT, sep="\t")
+df = df[ df["top_title"].str.contains( "Bluetongue", case=False, na=False) ]
 
 selected = []
 
