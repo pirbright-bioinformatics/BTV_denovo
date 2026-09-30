@@ -71,40 +71,114 @@ def read_blast_table(path, sample, prefix):
     return df
 
 
-def combine_sample(sample, sample_dir):
+def clean_id(value):
+    return str(value).split("|", 1)[0]
+
+
+def read_protein_top_hits(diamond_path, metadata_path):
+    """Select the highest-scoring individual DIAMOND hit for each contig."""
+    diamond_path, metadata_path = Path(diamond_path), Path(metadata_path)
+    if not diamond_path.is_file():
+        raise FileNotFoundError(f"Missing DIAMOND table: {diamond_path}")
+    if not metadata_path.is_file():
+        raise FileNotFoundError(f"Missing cluster metadata: {metadata_path}")
+
+    metadata = pd.read_csv(metadata_path, sep="\t", dtype=str).fillna("")
+    required = {"protein_id", "segment", "gene", "protein_length"}
+    missing = required - set(metadata.columns)
+    if missing:
+        raise ValueError(f"{metadata_path}: missing required columns: {sorted(missing)}")
+    metadata["protein_id"] = metadata["protein_id"].map(clean_id)
+    metadata["protein_length"] = pd.to_numeric(metadata["protein_length"], errors="coerce")
+    metadata = metadata.drop_duplicates("protein_id", keep="first").set_index("protein_id")
+
+    fields = [
+        "qseqid", "sseqid", "stitle", "pident", "alignment_length", "evalue",
+        "bitscore", "qstart", "qend", "sstart", "send", "qlen", "slen", "qframe",
+    ]
+    diamond = pd.read_csv(
+        diamond_path, sep="\t", header=None, names=fields, dtype=str
+    ).fillna("")
+    output_columns = [
+        "contig", "protein_genes", "protein_segment", "protein_top_accession",
+        "protein_top_identity", "protein_top_alignment_length",
+        "protein_top_query_coverage", "protein_top_bitscore", "protein_top_score",
+    ]
+    if diamond.empty:
+        return pd.DataFrame(columns=output_columns)
+
+    for col in ("pident", "alignment_length", "bitscore", "qlen"):
+        diamond[col] = pd.to_numeric(diamond[col], errors="coerce")
+    diamond["protein_id"] = diamond["sseqid"].map(clean_id)
+    diamond["protein_length"] = diamond["protein_id"].map(metadata["protein_length"])
+    diamond = diamond.dropna(
+        subset=["pident", "alignment_length", "bitscore", "qlen", "protein_length"]
+    )
+    diamond = diamond[diamond["protein_length"] > 0].copy()
+    if diamond.empty:
+        return pd.DataFrame(columns=output_columns)
+
+    diamond["protein_coverage"] = (
+        diamond["alignment_length"] / diamond["protein_length"]
+    ).clip(upper=1.0)
+    diamond["protein_top_score"] = (
+        diamond["bitscore"] * (diamond["pident"] / 100.0)
+        * diamond["protein_coverage"] / diamond["protein_length"]
+    )
+    diamond["protein_top_query_coverage"] = (
+        diamond["alignment_length"] * 3.0 / diamond["qlen"] * 100.0
+    ).clip(upper=100.0)
+    diamond["protein_genes"] = diamond["protein_id"].map(metadata["gene"])
+    diamond["protein_segment"] = diamond["protein_id"].map(metadata["segment"])
+    diamond = diamond.sort_values(
+        ["qseqid", "protein_top_score", "bitscore"],
+        ascending=[True, False, False], kind="mergesort"
+    ).drop_duplicates("qseqid", keep="first")
+    return diamond.rename(columns={
+        "qseqid": "contig", "sseqid": "protein_top_accession",
+        "pident": "protein_top_identity",
+        "alignment_length": "protein_top_alignment_length",
+        "bitscore": "protein_top_bitscore",
+    })[output_columns].copy()
+
+
+def read_nucleotide_table(path):
+    df = pd.read_csv(path, sep="\t", dtype=str).fillna("")
+    if "contig" not in df.columns:
+        raise ValueError(f"{path}: missing required column: contig")
+    duplicate_count = df["contig"].duplicated(keep="first").sum()
+    if duplicate_count:
+        print(f"Warning: {path}: discarded {duplicate_count} duplicate contig row(s); keeping the first occurrence.")
+    df = df.drop_duplicates("contig", keep="first").copy()
+    keep = ["contig"] + (["genes"] if "genes" in df.columns else [])
+    keep.extend(field for field in HIT_FIELDS if field in df.columns)
+    df = df[keep].copy()
+    df = df.rename(columns={
+        field: f"nt_{field}" for field in df.columns
+        if field not in ("contig", "genes")
+    })
+    if "genes" in df.columns:
+        df = df.rename(columns={"genes": "nt_genes"})
+    return df
+
+
+def combine_sample(sample, sample_dir, metadata_path):
     sample_path = Path(sample_dir) / sample
-
-    protein = read_blast_table(
-        sample_path / "selected_hits.tsv",
-        sample,
-        "protein",
+    protein = read_protein_top_hits(
+        sample_path / "analysis" / "diamond.tsv", metadata_path
     )
-    nucleotide = read_blast_table(
-        sample_path / "ranked_candidates.tsv.blasted",
-        sample,
-        "nt",
+    nucleotide = read_nucleotide_table(
+        sample_path / "ranked_candidates.tsv.blasted"
     )
-
     combined = protein.merge(
-        nucleotide,
-        on="contig",
-        how="outer",
-        validate="one_to_one",
+        nucleotide, on="contig", how="outer", validate="one_to_one"
     )
-
     protein_genes = combined.get("protein_genes", pd.Series("", index=combined.index))
     nt_genes = combined.get("nt_genes", pd.Series("", index=combined.index))
-    combined.insert(
-        0,
-        "genes",
-        protein_genes.where(protein_genes.ne(""), nt_genes),
-    )
+    combined.insert(0, "genes", protein_genes.where(protein_genes.ne(""), nt_genes))
     combined.insert(0, "sample", sample)
-    # Remove rows where gene assignment is missing or empty.
     combined["genes"] = combined["genes"].fillna("").astype(str).str.strip()
-    combined = combined[combined["genes"].ne("")].copy()
-
-    return combined
+    return combined[combined["genes"].ne("")].copy()
 
 
 def main():
@@ -113,10 +187,11 @@ def main():
     parser.add_argument("--samples", nargs="+", required=True)
     parser.add_argument("--output-tsv", required=True)
     parser.add_argument("--output-html", required=True)
+    parser.add_argument("--metadata", required=True, help="cluster_metadata.tsv for DIAMOND subject annotation")
     args = parser.parse_args()
 
     tables = [
-        combine_sample(sample, args.sample_dir)
+        combine_sample(sample, args.sample_dir, args.metadata)
         for sample in args.samples
     ]
     result = pd.concat(tables, ignore_index=True, sort=False)
@@ -131,7 +206,7 @@ def main():
                 f"Missing coverage manifest for {sample}: {manifest_path}"
             )
         coverage = pd.read_csv(
-            manifest_path, sep="\\t", dtype=str
+            manifest_path, sep="\t", dtype=str
         ).fillna("")
         required_manifest_columns = {
             "sample", "contig", "coverage_plot", "status"
@@ -193,13 +268,9 @@ def main():
             "protein_top_alignment_length",
             "protein_top_query_coverage",
             "protein_top_bitscore",
-        ],
-        "Protein — second hit": [
-            "protein_second_accession",
-            "protein_second_identity",
-            "protein_second_alignment_length",
-            "protein_second_query_coverage",
-            "protein_second_bitscore",
+            "protein_top_score",
+            "protein_genes",
+            "protein_segment",
         ],
         "Nucleotide — top hit": [
             "nt_top_accession",
@@ -395,8 +466,10 @@ def main():
 
     <h1>Cross-sample BLAST summary</h1>
     <p class="note">
-    One row per sample and contig. Protein and nucleotide results are joined
-    by contig within each sample. Expand a column group to select individual
+    One row per sample and contig. Protein top hits are selected from DIAMOND
+    using cluster metadata and the protein score; nucleotide top and second
+    hits remain separate. Results are joined by contig within each sample.
+    Expand a column group to select individual
     fields, or use the group checkbox to toggle all fields in that group.
     </p>
 
