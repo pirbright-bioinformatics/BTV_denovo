@@ -39,7 +39,7 @@
 # =============================================================================
 
 import os
-from glob import glob
+import glob as pyglob
 
 
 configfile: "config.yaml"
@@ -67,12 +67,10 @@ SCRIPT_DIR = workflow.basedir
 LOGDIR = workflow.basedir + "/logs"
 CLUSTERS_TSV = os.path.join(CLUSTER_DIR, "clusters.tsv")
 BTV_FASTA = os.path.expanduser("~/BTV/BTV.fasta")
+PROBES_FASTA = config.get("probes_fasta", os.path.join(SCRIPT_DIR, "probes.fa"))
 
 def log_path(*parts):
     return os.path.join(LOGDIR, *parts)
-
-import glob
-import os
 
 from pathlib import Path
 def trimmed_reads1(wc):
@@ -116,6 +114,9 @@ rule all:
         #expand(SAMPLEDIR + "/{sample}/selected_contigs/coverage_report.pdf", sample=SAMPLES),
         expand( SAMPLEDIR + "/{sample}/analysis/reference_coverage/coverage.pdf", sample=SAMPLES),
         expand( SAMPLEDIR + "/{sample}/analysis/reference_coverage/coverage.tsv", sample=SAMPLES),
+        expand(SAMPLEDIR + "/{sample}/analysis/probe_binding/probe_hits.tsv", sample=SAMPLES),
+        expand(SAMPLEDIR + "/{sample}/analysis/probe_binding/probe_binding.pdf", sample=SAMPLES),
+        expand(SAMPLEDIR + "/{sample}/analysis/probe_binding/probe_binding.html", sample=SAMPLES),
         SAMPLEDIR + "/blast_summary.tsv",
         SAMPLEDIR + "/blast_summary.html"
 
@@ -400,10 +401,10 @@ rule reference_coverage:
         ranked_blast = SAMPLEDIR +
             "/{sample}/ranked_candidates.tsv.blasted",
         reference = BTV_FASTA,
-        R1 = lambda wc: sorted(glob.glob(
+        R1 = lambda wc: sorted(pyglob.glob(
             f"{SAMPLEDIR}/{wc.sample}/trimmed/*_val_1.fq"
         )),
-        R2 = lambda wc: sorted(glob.glob(
+        R2 = lambda wc: sorted(pyglob.glob(
             f"{SAMPLEDIR}/{wc.sample}/trimmed/*_val_2.fq"
         )),
     output:
@@ -456,8 +457,8 @@ rule retain_selected_tophits:
 rule align_contig:
     input:
         contig = SAMPLEDIR + "/{sample}/analysis/contigs/{contig}.fa",
-        R1 = lambda wc: glob(f"{SAMPLEDIR}/{wc.sample}/trimmed/*_val_1.fq"),
-        R2 = lambda wc: glob(f"{SAMPLEDIR}/{wc.sample}/trimmed/*_val_2.fq"),
+        R1 = lambda wc: pyglob.glob(f"{SAMPLEDIR}/{wc.sample}/trimmed/*_val_1.fq"),
+        R2 = lambda wc: pyglob.glob(f"{SAMPLEDIR}/{wc.sample}/trimmed/*_val_2.fq"),
     output:
         bam = SAMPLEDIR + "/{sample}/analysis/bam/{contig}.fa.bam",
         bai = SAMPLEDIR + "/{sample}/analysis/bam/{contig}.fa.bam.bai",
@@ -487,7 +488,7 @@ rule align_to_contigs:
         nt_fasta = REF_DIR + "/references.nt.fasta",
     output:
         report = SAMPLEDIR + "/{sample}/analysis/coverage_report.pdf",
-        containment = directory(SAMPLEDIR + "/{sample}/analysis/containment")
+        containment = SAMPLEDIR + "/{sample}/analysis/containment",
 
     shell:
         """
@@ -500,7 +501,7 @@ rule extract_selected_contigs:
         selected = SAMPLEDIR + "/{sample}/selected_hits.tsv",
         contigs = SAMPLEDIR + "/{sample}/assembly.fasta",
         coverage_report = SAMPLEDIR + "/{sample}/analysis/coverage_report.pdf",
-        containment = directory(SAMPLEDIR + "/{sample}/analysis/containment"),
+        containment = SAMPLEDIR + "/{sample}/analysis/containment",
     output:
         selected_contigs = directory(SAMPLEDIR + "/{sample}/selected_contigs"),
         coverage_report = SAMPLEDIR + "/{sample}/selected_contigs/coverage_report.pdf"
@@ -511,6 +512,41 @@ rule extract_selected_contigs:
         cp {SAMPLEDIR}/{wildcards.sample}/analysis/coverage_report.pdf {output.selected_contigs}
         """
 
+rule probe_binding:
+    input:
+        probes=PROBES_FASTA,
+        hits=SAMPLEDIR + "/{sample}/ranked_candidates.tsv.blasted",
+        reference=BTV_FASTA,
+        reference_coverage=SAMPLEDIR + "/{sample}/analysis/reference_coverage/coverage.tsv",
+        selected_contigs=SAMPLEDIR + "/{sample}/selected_contigs",
+        selected_hits=SAMPLEDIR + "/{sample}/selected_hits.tsv",
+        coverage_report=SAMPLEDIR + "/{sample}/analysis/coverage_report.pdf"
+    output:
+        hits=SAMPLEDIR + "/{sample}/analysis/probe_binding/probe_hits.tsv",
+        pdf=SAMPLEDIR + "/{sample}/analysis/probe_binding/probe_binding.pdf",
+        html=SAMPLEDIR + "/{sample}/analysis/probe_binding/probe_binding.html"
+    params:
+        script=SCRIPT_DIR + "/probe_binding.py",
+        selected_dir=SAMPLEDIR + "/{sample}/selected_contigs",
+        analysis_dir=SAMPLEDIR + "/{sample}/analysis",
+        outdir=SAMPLEDIR + "/{sample}/analysis/probe_binding"
+    threads: 2
+    log:
+        log_path("{sample}/probe_binding.log")
+    shell:
+        """
+        set -euo pipefail
+        python {params.script:q} \
+            --sample {wildcards.sample:q} \
+            --probes {input.probes:q} \
+            --reference-fasta {input.reference:q} \
+            --ranked-hits {input.hits:q} \
+            --selected-dir {params.selected_dir:q} \
+            --reference-coverage {input.reference_coverage:q} \
+            --analysis-dir {params.analysis_dir:q} \
+            --outdir {params.outdir:q} \
+            --threads {threads} > {log:q} 2>&1
+        """
 
 #rule summarise_blast:
 #    input:
