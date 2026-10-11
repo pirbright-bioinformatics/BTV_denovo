@@ -8,6 +8,7 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_pdf import PdfPages
+from matplotlib.patches import Patch, Rectangle
 
 IUPAC_DNA=set('ACGTRYSWKMBDHVN')
 IUPAC_COMPAT = {
@@ -60,6 +61,23 @@ def binding_class(longest):
     if longest > 70: return 'strong', 'green'
     if longest >= 60: return 'intermediate', 'orange'
     return 'weak', 'red'
+
+def draw_probe_track(ax, target_length, hits):
+    """Draw a positional probe-binding track below the x-axis."""
+    if not target_length:
+        return
+    trans = ax.get_xaxis_transform()
+    y0, height = -0.095, 0.045
+    ax.plot([1, target_length], [y0 + height/2, y0 + height/2],
+            color='black', linewidth=1.5, solid_capstyle='butt',
+            transform=trans, clip_on=False, zorder=5)
+    for h in hits:
+        for rs, run_end, runlen in h['match_runs']:
+            _, colour = binding_class(runlen)
+            ax.add_patch(Rectangle((rs + 1, y0), run_end-rs, height,
+                                   facecolor=colour, edgecolor='none',
+                                   alpha=0.85, transform=trans,
+                                   clip_on=False, zorder=6))
 
 def map_sam(probes_fa,target_fa,kind,sample,threads):
     cmd=['minimap2','-ax','sr','--MD','-N','50','-t',str(threads),str(target_fa),str(probes_fa)]
@@ -130,6 +148,30 @@ def reconstruct_alignment(probe_seq, target_seq, start0, cigar, reverse):
         (int(n), op)
         for n, op in re.findall(r'(\d+)([MIDNSHP=X])', cigar)
     ]
+
+    # Hard clipping does not consume SAM SEQ, but probe_seq comes from the
+    # original FASTA and therefore still contains those bases. Remove the
+    # leading/trailing hard-clipped portions before consuming the query.
+    leading_hard = 0
+    for n, op in ops:
+        if op == 'H':
+            leading_hard += n
+        else:
+            break
+    trailing_hard = 0
+    for n, op in reversed(ops):
+        if op == 'H':
+            trailing_hard += n
+        else:
+            break
+    hard_clipped = leading_hard + trailing_hard
+    if hard_clipped > len(query):
+        raise ValueError(
+            f"CIGAR {cigar}: hard clipping consumes {hard_clipped} "
+            f"query bases, but query length is {len(query)}"
+        )
+    if hard_clipped:
+        query = query[leading_hard:len(query) - trailing_hard]
 
     qpos = 0
     rpos = start0
@@ -244,7 +286,7 @@ def reconstruct_alignment(probe_seq, target_seq, start0, cigar, reverse):
                 aligned_target.append(t)
 
                 if compatible:
-                    match_line.append('.')
+                    match_line.append('|')
                     match_bases += 1
 
                     if current_run_length == 0:
@@ -268,8 +310,8 @@ def reconstruct_alignment(probe_seq, target_seq, start0, cigar, reverse):
 
     finish_run()
 
-    # The CIGAR should account for the complete query sequence,
-    # apart from hard clipping.
+    # query has already had leading/trailing hard-clipped bases removed.
+    # Soft clipping remains query-consuming and is therefore included here.
     if qpos != len(query):
         raise ValueError(
             f"CIGAR/query length mismatch: CIGAR consumed {qpos} "
@@ -338,6 +380,7 @@ def main():
     if not refs: raise ValueError('No top BLAST reference accessions could be resolved in reference FASTA')
     if not selected: raise ValueError(f'No selected contig FASTAs found in {a.selected_dir}')
     out=Path(a.outdir); out.mkdir(parents=True,exist_ok=True)
+    gene_plots_dir= out / "gene_plots";gene_plots_dir.mkdir(parents=True,exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='probe_binding_',dir=out) as td:
         td=Path(td); qf=td/'probes.fa'; rf=td/'refs.fa'; sf=td/'selected.fa'
         write_fasta(probes,qf); write_fasta(refs,rf); write_fasta(selected,sf)
@@ -352,131 +395,35 @@ def main():
         for _,r in ranked.iterrows():
             gene,contig=r['genes'],r['contig']; rgh=[h for h in rh if h['gene']==gene]; shh=[h for h in sh if h['gene']==gene]
             if not rgh and not shh: continue
-            fig,axs=plt.subplots(
-                2,1,figsize=(13,6),sharex=False,constrained_layout=True
-            )
-            from matplotlib.patches import Patch
-
-            def draw_probe_track(ax, target_hits, target_length,
-                                 covered_positions=None, mark_uncovered=False):
-                # Draw a positional track below the x-axis.
-                # Coloured regions are contiguous IUPAC-compatible matching runs.
-                # For selected contigs, uncovered positions are black.
-                track_y = -0.16
-                track_h = 0.10
-
-                if mark_uncovered and target_length:
-                    # Black is the baseline: it represents zero/missing read coverage.
-                    ax.add_patch(
-                        plt.Rectangle(
-                            (1, track_y),
-                            target_length,
-                            track_h,
-                            transform=ax.get_xaxis_transform(),
-                            facecolor='black',
-                            edgecolor='none',
-                            alpha=.9,
-                            clip_on=False,
-                        )
-                    )
-
-                def covered_parts(start0, end0):
-                    if not mark_uncovered or covered_positions is None:
-                        yield start0, end0
-                        return
-                    # Only colour bases having positive read depth.
-                    run_start = None
-                    prev = None
-                    for pos in range(start0 + 1, end0 + 1):
-                        if pos in covered_positions:
-                            if run_start is None:
-                                run_start = pos
-                            prev = pos
-                        elif run_start is not None:
-                            yield run_start, prev + 1
-                            run_start = None
-                            prev = None
-                    if run_start is not None:
-                        yield run_start, prev + 1
-
-                for h in target_hits:
-                    for rs, run_end, runlen in h['match_runs']:
-                        _, colour = binding_class(runlen)
-                        for part_start, part_end in covered_parts(rs, run_end):
-                            ax.add_patch(
-                                plt.Rectangle(
-                                    (part_start, track_y),
-                                    part_end - part_start,
-                                    track_h,
-                                    transform=ax.get_xaxis_transform(),
-                                    facecolor=colour,
-                                    edgecolor='none',
-                                    alpha=.9,
-                                    clip_on=False,
-                                )
-                            )
-
-                ax.text(
-                    0.0, track_y - 0.035,
-                    'Probe-compatible binding',
-                    transform=ax.transAxes,
-                    ha='left', va='top', fontsize=8
-                )
-
-                if target_length:
-                    ax.set_xlim(1, target_length)
-
-            # Top: reference depth plus positional probe-compatible track.
-            acc=norm_acc(r['top_accession'])
-            ax=axs[0]
-            reference_length=0
+            fig,axs=plt.subplots(2,1,figsize=(13,6),constrained_layout=True)
+            acc=norm_acc(r['top_accession']); ax=axs[0]
             if not cov.empty and {'accession','position','depth'}.issubset(cov.columns):
                 cv=cov[cov['accession'].astype(str).map(norm_acc)==acc]
-                if cv.empty and 'gene' in cov.columns:
-                    cv=cv[cv['gene'].astype(str)==gene]
-                if not cv.empty:
-                    ax.plot(cv['position'],cv['depth'],linewidth=.65)
-                    reference_length=int(cv['position'].max())
-
-            if not reference_length:
-                reference_length=max((h['end'] for h in rgh),default=0)
-
-            draw_probe_track(ax,rgh,reference_length)
+                if cv.empty and 'gene' in cov.columns: cv=cov[cov['gene'].astype(str)==gene]
+                if not cv.empty: ax.plot(cv['position'],cv['depth'],linewidth=.65)
+            ref_target_id = safe(gene) + '__' + safe(acc)
+            ref_length = len(refs.get(ref_target_id, ''))
+            draw_probe_track(ax, ref_length, rgh)
             ax.set_title(f'{gene} — top reference ({acc})')
-            ax.set_xlabel('Reference position (bp)')
-            ax.set_ylabel('Read depth')
+            ax.set_xlabel('Reference position (bp)'); ax.set_ylabel('Read depth')
             ax.grid(alpha=.25)
-
-            # Bottom: selected-contig depth plus positional probe-compatible track.
-            ax=axs[1]
-            xs,ys=depth(Path(a.analysis_dir)/f'{contig}.fa.depth.txt')
-            if xs:
-                ax.plot(xs,ys,linewidth=.65)
-
-            selected_length=max((h['end'] for h in shh),default=0)
-            if xs:
-                selected_length=max(selected_length,max(xs))
-
-            # A position is considered covered when the depth file reports >0.
-            # Missing positions are treated as uncovered, so they remain black.
-            covered_positions={x for x,y in zip(xs,ys) if y > 0}
-            draw_probe_track(
-                ax, shh, selected_length,
-                covered_positions=covered_positions,
-                mark_uncovered=True,
-            )
+            ax=axs[1]; xs,ys=depth(Path(a.analysis_dir)/f'{contig}.fa.depth.txt')
+            if xs: ax.plot(xs,ys,linewidth=.65)
+            sel_target_id = safe(gene) + '__' + safe(contig)
+            sel_length = len(selected.get(sel_target_id, ''))
+            draw_probe_track(ax, sel_length, shh)
             ax.set_title(f'{gene} — selected contig ({contig})')
-            ax.set_xlabel('Selected-contig position (bp)')
-            ax.set_ylabel('Read depth')
+            ax.set_xlabel('Selected-contig position (bp)'); ax.set_ylabel('Read depth')
             ax.grid(alpha=.25)
-
             fig.legend(handles=[
-                Patch(facecolor='green',alpha=.9,label='>20 bp contiguous match'),
-                Patch(facecolor='orange',alpha=.9,label='10–20 bp contiguous match'),
-                Patch(facecolor='red',alpha=.9,label='<10 bp contiguous match'),
-                Patch(facecolor='black',alpha=.9,label='No contig read coverage'),
-            ],loc='upper center',ncol=3,fontsize=8)
-            pdf.savefig(fig); plt.close(fig)
+                Patch(facecolor='green', alpha=.45, label='>70 bp contiguous match'),
+                Patch(facecolor='orange', alpha=.45, label='60–70 bp contiguous match'),
+                Patch(facecolor='red', alpha=.45, label='<60 bp contiguous match'),
+            ], loc='upper center', ncol=3, fontsize=8)
+            gene_plot = gene_plots_dir / f'{safe(gene)}.png'
+            fig.savefig(gene_plot, dpi=180, bbox_inches='tight')
+            pdf.savefig(fig)
+            plt.close(fig)
     df=pd.DataFrame(hits,columns=cols)
     if not df.empty: df=df.sort_values(['gene','probe_id','target_type','start'])
     table=df.to_html(index=False,escape=True,table_id='hits')
@@ -484,7 +431,7 @@ def main():
     for _,h in df.iterrows():
         blocks.append(
             f"""<details class="alignment" data-search="{html.escape(str(h['probe_id'])+' '+str(h['gene'])+' '+str(h['target_type'])+' '+str(h['contig']))}">
-<summary><b>Probe: {html.escape(str(h['probe_id']))}</b> — {html.escape(str(h['gene']))} — {html.escape(str(h['target_type']))} — longest compatible run: <b>{int(h['longest_match_run'])} bp</b> ({html.escape(str(h['binding_class']))})</summary>
+<summary><b>{html.escape(str(h['probe_id']))}</b> — {html.escape(str(h['gene']))} — {html.escape(str(h['target_type']))} — longest compatible run: <b>{int(h['longest_match_run'])} bp</b> ({html.escape(str(h['binding_class']))})</summary>
 <div class="meta">Coverage: {float(h['probe_coverage_pct']):.1f}% | Identity: {float(h['identity_pct']):.1f}% | Matches: {int(h['match_bases'])} | Mismatches: {int(h['mismatch_bases'])} | Indels: {int(h['inserted_bases'])}I/{int(h['deleted_bases'])}D | Strand: {html.escape(str(h['strand']))} | CIGAR: {html.escape(str(h['cigar']))}</div>
 <pre class="seq">PROBE  {html.escape(str(h['alignment_probe']))}
         {html.escape(str(h['alignment_match']))}
@@ -492,7 +439,13 @@ TARGET  {html.escape(str(h['alignment_target']))}</pre>
 </details>"""
         )
     align_html=''.join(blocks)
-    page=f"""<!doctype html><html><head><meta charset="utf-8"><title>Probe binding — {html.escape(str(a.sample))}</title>
+    gene_plot_links = []
+    for gene in sorted({str(g) for g in df['gene'] if str(g)}):
+        plot_name = f'{safe(gene)}.png'
+        if (gene_plots_dir / plot_name).is_file():
+            gene_plot_links.append(f'<li><a href="gene_plots/{html.escape(plot_name)}">{html.escape(gene)}</a></li>')
+    gene_plot_html = '<ul>' + ''.join(gene_plot_links) + '</ul>' if gene_plot_links else '<p>No standalone gene plots were generated.</p>'
+    page=f"""<!doctype html><html><head><meta charset="utf-8"><title>Probe binding {html.escape(a.sample)}</title>
 <style>
 body{{font-family:Arial,sans-serif;margin:2rem}}
 table{{border-collapse:collapse;font-size:.8rem;width:100%}}
@@ -504,16 +457,15 @@ th{{position:sticky;top:0;background:#eee}}
 .seq{{overflow:auto;background:#f7f7f7;padding:1rem;font-family:monospace;line-height:1.4}}
 .meta{{margin:.5rem 0;color:#555}}
 .legend span{{display:inline-block;padding:.25rem .5rem;margin-right:.5rem;border-radius:3px}}
-.green{{background:#90ee90}} .orange{{background:#ffd580}} .red{{background:#ff9999}} .black{{background:#000;color:#fff}}
+.green{{background:#90ee90}} .orange{{background:#ffd580}} .red{{background:#ff9999}}
 </style></head><body>
-<h1>Probe binding — {html.escape(str(a.sample))}</h1>
+<h1>Probe binding — {html.escape(a.sample)}</h1>
 <p>Probe alignments against each gene's top BLAST reference and corresponding selected contig.
 IUPAC-compatible bases are counted as matches. Classification is based on the
 <b>longest contiguous compatible matching run</b>, not overall identity.</p>
-<div class="legend"><span class="green">&gt;20 bp contiguous match</span>
-<span class="orange">10–20 bp contiguous match</span>
-<span class="red">&lt;10 bp contiguous match</span>
-<span style="background:#000;color:#fff">No contig read coverage</span></div>
+<div class="legend"><span class="green">&gt;70 bp contiguous match</span>
+<span class="orange">60–70 bp contiguous match</span>
+<span class="red">&lt;60 bp contiguous match</span></div>
 <p><a href="probe_binding.pdf">Coverage and probe PDF</a> | <a href="probe_hits.tsv">Download alignment TSV</a></p>
 <input id="q" placeholder="Filter probe, gene, target..." style="width:30rem;padding:.5rem">
 <h2>Alignment table</h2><div class="wrap">{table}</div>
@@ -527,5 +479,5 @@ document.getElementById('q').addEventListener('input',e=>{{
 </script></body></html>"""
     (out/'probe_binding.html').write_text(page,encoding='utf-8')
     if missing: (out/'missing_reference_accessions.tsv').write_text('gene\taccession\n'+'\n'.join(missing)+'\n')
-    print(f'Wrote {out}/probe_hits.tsv, probe_binding.pdf, probe_binding.html')
+    print(f'Wrote {out}/probe_hits.tsv, probe_binding.pdf, probe_binding.html, and gene_plots/')
 if __name__=='__main__': main()

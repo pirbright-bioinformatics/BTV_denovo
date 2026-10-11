@@ -40,6 +40,7 @@
 
 import os
 import glob as pyglob
+#from glob import glob
 
 
 configfile: "config.yaml"
@@ -503,13 +504,13 @@ rule extract_selected_contigs:
         coverage_report = SAMPLEDIR + "/{sample}/analysis/coverage_report.pdf",
         containment = SAMPLEDIR + "/{sample}/analysis/containment",
     output:
-        selected_contigs = directory(SAMPLEDIR + "/{sample}/selected_contigs"),
-        coverage_report = SAMPLEDIR + "/{sample}/selected_contigs/coverage_report.pdf"
+        selected_contigs = directory(SAMPLEDIR + "/{sample}/selected_contigs")
+        #coverage_report = SAMPLEDIR + "/{sample}/selected_contigs/coverage_report.pdf"
     shell:
         """
         python {SCRIPT_DIR}/extract_gene_contigs.py {input.selected} {input.contigs} {output.selected_contigs}
-        pdfunite {SAMPLEDIR}/{wildcards.sample}/analysis/containment/plots/*.pdf {output.selected_contigs}/containment_plots.pdf 
-        cp {SAMPLEDIR}/{wildcards.sample}/analysis/coverage_report.pdf {output.selected_contigs}
+        #pdfunite {SAMPLEDIR}/{wildcards.sample}/analysis/containment/plots/*.pdf {output.selected_contigs}/containment_plots.pdf 
+        #cp {SAMPLEDIR}/{wildcards.sample}/analysis/coverage_report.pdf {output.selected_contigs}
         """
 
 rule probe_binding:
@@ -524,7 +525,8 @@ rule probe_binding:
     output:
         hits=SAMPLEDIR + "/{sample}/analysis/probe_binding/probe_hits.tsv",
         pdf=SAMPLEDIR + "/{sample}/analysis/probe_binding/probe_binding.pdf",
-        html=SAMPLEDIR + "/{sample}/analysis/probe_binding/probe_binding.html"
+        html=SAMPLEDIR + "/{sample}/analysis/probe_binding/probe_binding.html",
+        plots=directory(SAMPLEDIR + "/{sample}/analysis/probe_binding/gene_plots")
     params:
         script=SCRIPT_DIR + "/probe_binding.py",
         selected_dir=SAMPLEDIR + "/{sample}/selected_contigs",
@@ -617,6 +619,10 @@ rule summarise_blast:
         ),
         coverage=expand(
             SAMPLEDIR + "/{sample}/coverage_manifest.tsv",
+            sample=SAMPLES
+        ),
+        probe_html=expand(
+            SAMPLEDIR + "/{sample}/analysis/probe_binding/probe_binding.html",
             sample=SAMPLES
         ),
         metadata=CLUSTER_DIR + "/cluster_metadata.tsv"
